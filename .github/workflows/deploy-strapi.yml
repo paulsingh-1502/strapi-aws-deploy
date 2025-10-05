@@ -3,7 +3,7 @@ name: Build, Push Docker & Deploy Strapi
 on:
   push:
     branches:
-      - main  # Trigger on push to main
+      - main  # Trigger on push to main branch
 
 jobs:
   build-push-deploy:
@@ -44,10 +44,16 @@ jobs:
       run: |
         docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
 
-    # 7️⃣ Optional: Terraform deploy ECS
+    # 7️⃣ Setup Terraform
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.7.0  # change if needed
+
+    # 8️⃣ Terraform deploy ECS
     - name: Terraform Init & Apply
       run: |
-        cd terraform/  # if your TF files are in terraform/ folder
+        cd terraform/  # remove this line if TF files are in repo root
         terraform init
         terraform apply -auto-approve
       env:
