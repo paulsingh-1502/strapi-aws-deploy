@@ -1,18 +1,20 @@
-name: Build & Push Strapi Docker Image to ECR
+name: Build, Push Docker & Deploy Strapi
 
 on:
   push:
     branches:
-      - main  # Trigger on push to main branch
+      - main  # Trigger on push to main
 
 jobs:
-  build-and-push:
+  build-push-deploy:
     runs-on: ubuntu-latest
 
     steps:
+    # 1️⃣ Checkout the repo
     - name: Checkout repository
       uses: actions/checkout@v3
 
+    # 2️⃣ Configure AWS credentials
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
@@ -20,21 +22,35 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
+    # 3️⃣ Login to ECR
     - name: Login to ECR
       run: |
-        echo "Logging into ECR..."
         LOGIN_PASSWORD=$(aws ecr get-login-password --region ${{ secrets.AWS_REGION }})
         echo $LOGIN_PASSWORD | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
+    # 4️⃣ Build Docker image
     - name: Build Docker image
       run: |
         docker build -t ${{ secrets.ECR_REPOSITORY }} .
 
-    - name: Tag Docker image for ECR
+    # 5️⃣ Tag Docker image for ECR
+    - name: Tag Docker image
       run: |
         docker tag ${{ secrets.ECR_REPOSITORY }}:latest \
         ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
 
+    # 6️⃣ Push Docker image to ECR
     - name: Push Docker image to ECR
       run: |
         docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+
+    # 7️⃣ Optional: Terraform deploy ECS
+    - name: Terraform Init & Apply
+      run: |
+        cd terraform/  # if your TF files are in terraform/ folder
+        terraform init
+        terraform apply -auto-approve
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
