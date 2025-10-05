@@ -1,15 +1,15 @@
-variable "region" {
-  default = "ap-south-1"
+variable "aws_region" {
+  default = "ap-south-1"  # Change to your region
 }
 
-variable "db_username" {
-  description = "Username for the PostgreSQL database"
-  type        = string
+variable "app_name" {
+  default = "strapi-app"
 }
 
-variable "db_password" {
-  description = "Password for the PostgreSQL database"
-  type        = string
-  sensitive   = true
+variable "container_port" {
+  default = 1337
 }
 
+variable "desired_count" {
+  default = 1
+}
