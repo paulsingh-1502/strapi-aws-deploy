@@ -1,67 +1,50 @@
-provider "aws" {
-  region = "ap-south-1"
-}
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
 
-# ------------------------
-# VPC, Subnets, Networking
-# ------------------------
-
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = { Name = "strapi-vpc" }
-}
-
-resource "aws_subnet" "public_a" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "ap-south-1a"
-  map_public_ip_on_launch = true
-  tags = { Name = "public-a" }
-}
-
-resource "aws_subnet" "public_b" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "ap-south-1b"
-  map_public_ip_on_launch = true
-  tags = { Name = "public-b" }
-}
-
-resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.main.id
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.gw.id
+  backend "s3" {
+    # Optional: configure if using remote backend
   }
 }
 
-resource "aws_route_table_association" "a" {
-  subnet_id      = aws_subnet.public_a.id
-  route_table_id = aws_route_table.public.id
+provider "aws" {
+  region = var.region
 }
 
-resource "aws_route_table_association" "b" {
-  subnet_id      = aws_subnet.public_b.id
-  route_table_id = aws_route_table.public.id
+# -----------------------------------------------------
+# 1️⃣ ECR Repository
+# -----------------------------------------------------
+resource "aws_ecr_repository" "strapi" {
+  name = "strapi-app"
 }
 
-# ------------------------
-# Security Groups
-# ------------------------
+# -----------------------------------------------------
+# 2️⃣ VPC and Subnets
+# -----------------------------------------------------
+data "aws_vpc" "default" {
+  default = true
+}
 
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# -----------------------------------------------------
+# 3️⃣ Security Groups
+# -----------------------------------------------------
 resource "aws_security_group" "alb_sg" {
-  name        = "alb-sg"
-  description = "Allow inbound HTTP traffic"
-  vpc_id      = aws_vpc.main.id
+  name        = "strapi-alb-sg"
+  description = "Allow HTTP inbound traffic"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description = "HTTP from anywhere"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -77,12 +60,11 @@ resource "aws_security_group" "alb_sg" {
 }
 
 resource "aws_security_group" "ecs_sg" {
-  name        = "ecs-sg"
+  name        = "strapi-ecs-sg"
   description = "Allow traffic from ALB"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description     = "Traffic from ALB"
     from_port       = 1337
     to_port         = 1337
     protocol        = "tcp"
@@ -98,9 +80,9 @@ resource "aws_security_group" "ecs_sg" {
 }
 
 resource "aws_security_group" "db_sg" {
-  name        = "db-sg"
-  description = "Allow Postgres traffic from ECS"
-  vpc_id      = aws_vpc.main.id
+  name        = "strapi-db-sg"
+  description = "Allow ECS access to DB"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
     from_port       = 5432
@@ -117,56 +99,64 @@ resource "aws_security_group" "db_sg" {
   }
 }
 
-# ------------------------
-# PostgreSQL RDS
-# ------------------------
-
-resource "aws_db_subnet_group" "postgres_subnet_group" {
-  name       = "postgres-subnet-group"
-  subnet_ids = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+# -----------------------------------------------------
+# 4️⃣ RDS PostgreSQL
+# -----------------------------------------------------
+resource "aws_db_subnet_group" "postgres_subnet" {
+  name       = "strapi-db-subnet"
+  subnet_ids = data.aws_subnets.default.ids
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier              = "strapi-db"
-  engine                  = "postgres"
-  instance_class           = "db.t3.micro"
-  allocated_storage        = 20
-  db_name                  = "strapidb"
-  username                 = "strapi"
-  password                 = "StrapiPass123!"
-  publicly_accessible      = true
-  vpc_security_group_ids   = [aws_security_group.db_sg.id]
-  db_subnet_group_name     = aws_db_subnet_group.postgres_subnet_group.name
-  skip_final_snapshot      = true
+  identifier             = "strapi-app-db"
+  engine                 = "postgres"
+  instance_class         = "db.t3.micro"
+  allocated_storage      = 20
+  name                   = "strapidb"
+  username               = var.db_username
+  password               = var.db_password
+  db_subnet_group_name   = aws_db_subnet_group.postgres_subnet.name
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  skip_final_snapshot    = true
+  publicly_accessible    = false
 }
 
-# ------------------------
-# ECS Cluster & ALB
-# ------------------------
-
+# -----------------------------------------------------
+# 5️⃣ ECS Cluster
+# -----------------------------------------------------
 resource "aws_ecs_cluster" "strapi" {
   name = "strapi-app-cluster"
 }
 
+# -----------------------------------------------------
+# 6️⃣ Load Balancer (ALB)
+# -----------------------------------------------------
 resource "aws_lb" "strapi_alb" {
   name               = "strapi-app-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+  subnets            = data.aws_subnets.default.ids
 }
 
 resource "aws_lb_target_group" "strapi_tg" {
-  name     = "strapi-tg"
-  port     = 1337
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  name        = "strapi-tg"
+  port        = 1337
+  protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
+  target_type = "ip"  # ✅ Fargate requires IP target type
+
   health_check {
-    path = "/"
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    matcher             = "200-399"
   }
 }
 
-resource "aws_lb_listener" "http" {
+resource "aws_lb_listener" "strapi_listener" {
   load_balancer_arn = aws_lb.strapi_alb.arn
   port              = 80
   protocol          = "HTTP"
@@ -177,57 +167,57 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# ------------------------
-# ECS Task Definition
-# ------------------------
-
+# -----------------------------------------------------
+# 7️⃣ ECS Task Definition
+# -----------------------------------------------------
 resource "aws_ecs_task_definition" "strapi_task" {
-  family                   = "strapi-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "1024"
+  family                   = "strapi-app-task"
+  network_mode              = "awsvpc"
+  requires_compatibilities  = ["FARGATE"]
+  cpu                       = "512"
+  memory                    = "1024"
+  execution_role_arn        = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn             = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name  = "strapi"
-      image = "140023400526.dkr.ecr.ap-south-1.amazonaws.com/strapi-app:latest"
-      portMappings = [
-        {
-          containerPort = 1337
-          hostPort      = 1337
-        }
-      ]
+      name      = "strapi-app"
+      image     = "${aws_ecr_repository.strapi.repository_url}:latest"
+      essential = true
+      portMappings = [{
+        containerPort = 1337
+        hostPort      = 1337
+        protocol      = "tcp"
+      }]
       environment = [
         { name = "DATABASE_CLIENT", value = "postgres" },
         { name = "DATABASE_HOST", value = aws_db_instance.postgres.address },
         { name = "DATABASE_PORT", value = "5432" },
         { name = "DATABASE_NAME", value = "strapidb" },
-        { name = "DATABASE_USERNAME", value = "strapi" },
-        { name = "DATABASE_PASSWORD", value = "StrapiPass123!" }
+        { name = "DATABASE_USERNAME", value = var.db_username },
+        { name = "DATABASE_PASSWORD", value = var.db_password }
       ]
     }
   ])
-  execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
 }
 
-# ------------------------
-# IAM Role
-# ------------------------
-
+# -----------------------------------------------------
+# 8️⃣ IAM Role for ECS Task
+# -----------------------------------------------------
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "ecsTaskExecutionRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Principal = {
-        Service = "ecs-tasks.amazonaws.com"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
       }
-      Effect = "Allow"
-      Sid    = ""
-    }]
+    ]
   })
 }
 
@@ -236,10 +226,9 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ------------------------
-# ECS Service
-# ------------------------
-
+# -----------------------------------------------------
+# 9️⃣ ECS Service
+# -----------------------------------------------------
 resource "aws_ecs_service" "strapi_service" {
   name            = "strapi-service"
   cluster         = aws_ecs_cluster.strapi.id
@@ -248,26 +237,25 @@ resource "aws_ecs_service" "strapi_service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+    subnets         = data.aws_subnets.default.ids
+    security_groups = [aws_security_group.ecs_sg.id]
     assign_public_ip = true
-    security_groups  = [aws_security_group.ecs_sg.id]
   }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.strapi_tg.arn
-    container_name   = "strapi"
+    container_name   = "strapi-app"
     container_port   = 1337
   }
 
   depends_on = [
-    aws_lb_listener.http
+    aws_lb_listener.strapi_listener
   ]
 }
 
-# ------------------------
-# Output
-# ------------------------
-
-output "alb_dns_name" {
+# -----------------------------------------------------
+# 🔟 Outputs
+# -----------------------------------------------------
+output "alb_url" {
   value = aws_lb.strapi_alb.dns_name
 }
